@@ -1,0 +1,61 @@
+import os
+import json
+import google.generativeai as genai
+from django.db.models import Count, Q, Avg
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from .models import Ticket
+from .serializers import TicketSerializer
+
+class TicketViewSet(viewsets.ModelViewSet):
+    [span_1](start_span)queryset = Ticket.objects.all().order_by('-created_at') # Newest first[span_1](end_span)
+    serializer_class = TicketSerializer
+
+    # [span_2](start_span)[span_3](start_span)LLM Classification Endpoint[span_2](end_span)[span_3](end_span)
+    @action(detail=False, methods=['post'])
+    def classify(self, request):
+        description = request.data.get('description', '')
+        
+        # [span_4](start_span)This is the prompt required for review[span_4](end_span)
+        prompt = (
+            f"Analyze this support ticket description: '{description}'. "
+            "Suggest the most likely category (billing, technical, account, general) "
+            "and priority (low, medium, high, critical). "
+            "Return ONLY a JSON object with keys 'suggested_category' and 'suggested_priority'."
+        )
+
+        try:
+            genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+            model = genai.GenerativeModel('gemini-pro')
+            response = model.generate_content(prompt)
+            
+            # [span_5](start_span)Clean response and parse[span_5](end_span)
+            return Response(json.loads(response.text.strip()))
+        except Exception:
+            # [span_6](start_span)Graceful failure: system works even if LLM fails[span_6](end_span)
+            return Response({
+                "suggested_category": "general",
+                "suggested_priority": "medium"
+            })
+
+    # [span_7](start_span)Aggregated Stats Endpoint[span_7](end_span)
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        # [span_8](start_span)Using DB-level aggregation as strictly required[span_8](end_span)
+        base_stats = Ticket.objects.aggregate(
+            total_tickets=Count('id'),
+            open_tickets=Count('id', filter=Q(status='open'))
+        )
+        
+        # [span_9](start_span)Priority and Category breakdowns using annotate[span_9](end_span)
+        priority_breakdown = dict(Ticket.objects.values_list('priority').annotate(Count('priority')))
+        category_breakdown = dict(Ticket.objects.values_list('category').annotate(Count('category')))
+
+        return Response({
+            "total_tickets": base_stats['total_tickets'],
+            "open_tickets": base_stats['open_tickets'],
+            "priority_breakdown": priority_breakdown,
+            "category_breakdown": category_breakdown
+        })
+              
